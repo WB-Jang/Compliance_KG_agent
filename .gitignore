@@ -1,0 +1,4 @@
+# Secrets and environment variables
+.env
+app/llms/.env
+models/Midm-2.0-Base-Instruct-q4_0.gguf

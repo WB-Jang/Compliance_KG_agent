@@ -1,0 +1,35 @@
+{
+  "name": "KG_model",
+  "build": {
+    "context": "..",
+    "dockerfile": "../Dockerfile"
+  },
+
+  "workspaceFolder": "/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached",
+  "mountWorkspaceGitRoot": false,
+
+  "runArgs": [
+  "--gpus=all",
+  "--add-host=host.docker.internal:host-gateway"  // ← 중요
+  ],
+  "customizations": {
+      "vscode": {
+        "extensions": [
+          "ms-python.python",
+          "ms-python.vscode-pylance",
+          "ms-toolsai.jupyter",
+          "ms-azuretools.vscode-docker"
+        ],
+        "settings": {
+          "terminal.integrated.defaultProfile.linux": "bash",
+          // 컨테이너 기본 파이썬을 /app/.venv 로 고정
+          "python.defaultInterpreterPath": "/app/.venv/bin/python"
+        }
+      }
+    },
+  "remoteUser": "root",
+  "postCreateCommand": "",
+
+  "overrideCommand": true                // 컨테이너가 곧장 종료되는 걸 방지
+}

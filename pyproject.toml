@@ -1,0 +1,63 @@
+[tool.poetry]
+name = "Knowledge base Agent-poc"
+version = "0.1.0"
+description = "A Proof of Concept for Knowledge base Agent."
+authors = ["Woobin Jang <eeariorie@gmail.com>"]
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10, <3.12"
+neo4j = "*"
+chromadb = "0.5.23"
+# Hugging Face
+transformers = "4.44.2"
+tokenizers = "0.19.1"
+accelerate = "*"
+bitsandbytes = "*"
+optimum = "*"
+sentence-transformers = "*"
+huggingface-hub = "*"
+# LangChain
+langchain = "0.3.27"
+langgraph = "0.6.5"
+langchain-openai = "*"
+langchain-community = "0.3.27"
+langchain-google-genai = "*"
+# 데이터 과학 & ML (Python 3.10-compatible)
+scikit-learn = "*"
+pandas = "*"
+numpy = "*"
+matplotlib = "*"
+# mlflow = "*"
+scipy = "*"
+# 웹 및 API
+fastapi = "*"
+uvicorn = "*"
+streamlit = "*"
+aiohttp = "*"
+beautifulsoup4 = "*"
+# ZenML & 기타 유틸리티
+pydantic = ">=2.7,<3"
+protobuf = "*"
+ipykernel = "*"
+ipython = "*"
+httpx = "*"
+types-requests = "*"
+markdown-it-py = "*"
+altair = "*"
+# 추가
+pyyaml = "*"
+unstructured = { extras = ["pdf"], version = "*" }
+pypdf = "*"
+python-magic = "*"
+#python-magic-bin = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+black = "*"
+ruff = "*"
+jupyter = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

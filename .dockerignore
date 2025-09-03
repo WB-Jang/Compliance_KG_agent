@@ -1,0 +1,27 @@
+# .dockerignore
+
+# Git 관련 파일
+.git
+.gitignore
+
+# Docker 관련 파일
+Dockerfile
+.dockerignore
+
+# VSCode 설정
+.vscode/
+
+# Python 가상환경
+.venv
+venv/
+env/
+
+# Python 캐시 파일
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 기타 OS 파일
+.DS_Store
+Thumbs.db
