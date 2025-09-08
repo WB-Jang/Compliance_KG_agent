@@ -7,21 +7,21 @@ from rapidfuzz import fuzz
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 # ---------------------------
 # 1) 온프레미스 LLM (llama-server OpenAI 호환)
 # ---------------------------
-LLM_BASE  = os.getenv("LLM_BASE",  "http://127.0.0.1:8081/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instruct")
-LLM_KEY   = os.getenv("OPENAI_API_KEY", "not-needed")
 
-def _llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=LLM_MODEL,
-        temperature=0,
-        base_url=LLM_BASE,
-        api_key=LLM_KEY,
-    )
+BASE_URL = "http://host.docker.internal:8080/v1" 
+
+llm = ChatOpenAI(
+    model="Midm-2.0-Base-Instruct-q4_0",           # 서버에서 인식 가능한 임의의 모델명
+    base_url=BASE_URL,
+    api_key="sk-local-anything", # 의미없는 토큰도 OK
+    temperature=0.0,
+    max_tokens=8192               # 서버 토큰 제한 고려
+)
 
 # ---------------------------
 # 2) 구조화 출력 스키마 (Pydantic)
@@ -51,7 +51,7 @@ def _judge_chain():
         ("human",  JUDGE_HUMAN),
     ])
     # 구조화 출력: Pydantic으로 강제
-    return prompt | _llm().with_structured_output(JudgeVerdict)
+    return prompt | llm.with_structured_output(JudgeVerdict) # chain을 반환
 
 # ---------------------------
 # 4) 후보쌍 생성 (빠른 문자 유사도 블로킹)
@@ -69,6 +69,10 @@ def candidate_pairs(ents: List[Dict], ratio: int = 85):
                 scores.append(fuzz.token_sort_ratio(x, y))
         if max(scores) >= ratio:
             pairs.append((a, b))
+            ents.pop(a)
+            print(f'{a}를 pop하였습니다')
+            ents.pop(b)
+            print(f'{b}를 pop하였습니다')
     return pairs
 
 # ---------------------------
@@ -89,9 +93,7 @@ def llm_equiv(a: Dict, b: Dict) -> bool:
     except Exception:
         return False
 
-# ---------------------------
-# 6) 병합 루프
-# ---------------------------
+
 def merge_entities(ents: List[Dict]) -> List[Dict]:
     """
     - 후보쌍(candidate_pairs)으로 블로킹
@@ -102,7 +104,8 @@ def merge_entities(ents: List[Dict]) -> List[Dict]:
     changed = True
     while changed:
         changed = False
-        for a, b in candidate_pairs(ents):
+        pairs = candidate_pairs(ents)
+        for a, b in pairs:
             if llm_equiv(a, b):
                 # 누락 키 보정
                 a.setdefault("aliases", []); b.setdefault("aliases", [])
@@ -128,7 +131,117 @@ def merge_entities(ents: List[Dict]) -> List[Dict]:
                     a["type"] = b["type"]
 
                 # b 제거 후 다시 루프 시작
-                ents.remove(b)
+                pairs_removed = pairs.remove(b)
                 changed = True
                 break
-    return ents
+    ents.appned(pairs_removed)
+    print(f'{pairs_removed}가 다시 all_e에 합산되었습니다') 
+    return ents, pairs
+
+def _norm(s: str) -> str:
+    return " ".join((s or "").strip().lower().split())
+
+def _names(e: Dict) -> set[str]:
+    out = set()
+    if e.get("canonical"): out.add(_norm(e["canonical"]))
+    for a in e.get("aliases", []) or []:
+        if a: out.add(_norm(a))
+    return out
+
+def build_name2canon(ents: List[Dict]) -> Dict[str, str]:
+    m = {}
+    for e in ents:
+        can = _norm(e.get("canonical", ""))
+        if not can: 
+            continue
+        for n in _names(e) | {can}:
+            m[n] = can
+    return m
+
+def normalize_relations(relations: List[Dict], name2canon: Dict[str,str]) -> List[Dict]:
+    out = []
+    for r in relations:
+        s = name2canon.get(_norm(r.get("s","")), _norm(r.get("s","")))
+        o = name2canon.get(_norm(r.get("o","")), _norm(r.get("o","")))
+        p = _norm(r.get("p",""))
+        nr = dict(r)
+        nr["s"], nr["o"], nr["p"] = s, o, p
+        out.append(nr)
+    return out
+
+def _indices_involving(rel_norm: List[Dict], name_norm: str) -> List[int]:
+    return [i for i, r in enumerate(rel_norm) if r["s"] == name_norm or r["o"] == name_norm]
+
+def _direction_and_other(rn: Dict, center: str):
+    if rn["s"] == center:  return "subj", rn["o"]
+    if rn["o"] == center:  return "obj",  rn["s"]
+    return "", ""
+
+def _merge_evidence(dst: Dict, src: Dict) -> None: 
+    e1 = set(dst.get("evidence", []) or [])
+    e2 = set(src.get("evidence", []) or [])
+    dst["evidence"] = sorted(e1 | e2)
+    if "source" in dst or "source" in src:
+        s1 = set(dst.get("source", []) or [])
+        s2 = set(src.get("source", []) or [])
+        dst["source"] = sorted(s1 | s2)
+
+
+def dedupe_relations_simple(
+    ents: List[Dict],
+    relations: List[Dict],
+    pairs: List[(Dict, Dict)],
+    max_llm_checks: int = 200
+) -> List[Dict]:
+    name2canon = build_name2canon(ents)
+    rel_norm = normalize_relations(relations, name2canon)
+
+    to_delete = set()
+    checks = 0
+
+    for a, b in pairs:
+        a_can = _norm(a.get("canonical","")); a_can = name2canon.get(a_can, a_can)
+        b_can = _norm(b.get("canonical","")); b_can = name2canon.get(b_can, b_can)
+        if not a_can or not b_can: 
+            continue
+
+        a_idxs = _indices_involving(rel_norm, a_can)
+        b_idxs = _indices_involving(rel_norm, b_can)
+
+        for i in a_idxs:
+            if i in to_delete: continue
+            r1n = rel_norm[i]
+
+            for j in b_idxs:
+                if j in to_delete or i == j: 
+                    continue
+                r2n = rel_norm[j]
+
+                # 1) predicate 동일
+                if r1n["p"] != r2n["p"]:
+                    continue
+
+                # 2) 방향 동일
+                dir1, other1 = _direction_and_other(r1n, a_can)
+                dir2, other2 = _direction_and_other(r2n, b_can)
+                if not dir1 or not dir2 or dir1 != dir2:
+                    continue
+
+                # 3) 반대편 노드 동일
+                if other1 != other2:
+                    continue
+
+                # ---- LLM 최종판정 ----
+                if checks >= max_llm_checks:
+                    break
+                checks += 1
+
+                if llm_equiv(relations[i], relations[j]):
+                    # 더 많은 evidence 가진 쪽을 남김
+                    ei = len(relations[i].get("evidence", []) or [])
+                    ej = len(relations[j].get("evidence", []) or [])
+                    keep, drop = (i, j) if ei >= ej else (j, i)
+                    _merge_evidence(relations[keep], relations[drop])
+                    to_delete.add(drop)
+
+    return [r for k, r in enumerate(relations) if k not in to_delete]
