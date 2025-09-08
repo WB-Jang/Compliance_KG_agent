@@ -1,8 +1,9 @@
-import re, fitz
+import re
 from typing import List, Dict
+from langchain_community.document_loaders import PyPDFLoader
 
 # 은행 버전을 참조해서, 법령의 메타 데이터도 조문 안으로 들어가도록 설정하자
-def pdf_to_text(path: str) -> str:
+def _pdf_to_text(path: str) -> str:
     pdf_file = path
     loader = PyPDFLoader(pdf_file)
     pages = loader.load()
@@ -11,7 +12,7 @@ def pdf_to_text(path: str) -> str:
     
     return law_text
 
-def parse_law(law_text):
+def _parse_law(law_text):
     # 서문 분리
     # '^'로 시작하여 '제1장' 또는 '제1조' 직전까지의 모든 텍스트를 탐색 
     preamble_pattern = r'^(.*?)(?=제1장|제1조)'
@@ -46,12 +47,13 @@ def parse_law(law_text):
         articles = re.findall(article_pattern, chapter_content, re.DOTALL)
         
         # 각 조항의 앞뒤 공백을 제거하고 결과 딕셔너리에 저장
-        parsed_law['장'][chapter_title.strip()] = "\n".join([article.strip() for article in articles])
+        parsed_law['장'][chapter_title.strip()] = [article.strip() for article in articles]
 
     law_list = []
 
-    for chapter in parsed_law["장"].items():
-        law_list.append(chapter[1])
+    for law in parsed_law["장"].keys():
+        for article in parsed_law["장"][law]:
+            law_list.append(article)
     
     return law_list 
 

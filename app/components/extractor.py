@@ -1,4 +1,3 @@
-# app/components/extractor.py
 from __future__ import annotations
 import os, json
 from typing import List, Dict, Type
@@ -9,32 +8,16 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_core.output_parsers import StrOutputParser
 
-# ---------------------------
-# 1) 온프레미스 LLM 설정
-# ---------------------------
-# llama-server.exe (llama.cpp) 를 OpenAI 호환 모드로 띄운 경우:
-#   예) --host 127.0.0.1 --port 8081 --api-server
-# 기본값은 http://127.0.0.1:8081/v1 로 가정
-LLM_BASE = os.getenv("LLM_BASE", "http://127.0.0.1:8081/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "llama-3.1-8b-instruct")  # 서버에 로드한 모델 이름
-LLM_API_KEY = os.getenv("OPENAI_API_KEY", "not-needed")      # llama-server는 보통 미검증. placeholder
+BASE_URL = "http://host.docker.internal:8080/v1" 
 
-def _llm() -> ChatOpenAI:
-    """
-    llama-server(OpenAI 호환)로 붙는 LangChain LLM.
-    - base_url: http://host:port/v1
-    - api_key: dummy 허용
-    """
-    return ChatOpenAI(
-        model=LLM_MODEL,
-        temperature=0,
-        base_url=LLM_BASE,
-        api_key=LLM_API_KEY,
-    )
+llm = ChatOpenAI(
+    model="Midm-2.0-Base-Instruct-q4_0",           # 서버에서 인식 가능한 임의의 모델명
+    base_url=BASE_URL,
+    api_key="sk-local-anything", # 의미없는 토큰도 OK
+    temperature=0.5,
+    max_tokens=8192               # 서버 토큰 제한 고려
+)
 
-# ---------------------------
-# 2) 구조화 스키마 (Pydantic)
-# ---------------------------
 class Distilled(BaseModel):
     doc_type: str | None = None
     title: str | None = None
@@ -49,46 +32,83 @@ class Entities(BaseModel):
 class Relations(BaseModel):
     relations: list[dict]
 
-# ---------------------------
-# 3) 프롬프트 템플릿
-# ---------------------------
-DISTILL_SYS = (
-    "You are a precise information distiller for legal/regulatory texts. "
-    "Fill the blueprint ONLY with facts grounded in the provided texts. "
-    "Use null when absent. Keep arrays concise."
-)
-DISTILL_HUMAN = """Blueprint (JSON-like):
+
+DISTILL_SYS = ("""
+당신은 법률/규제 문서를 정밀하게 요약·정제하는 역할을 합니다. 
+    다음 지침을 반드시 지키세요: 
+    - 제공된 텍스트에 근거하여 blueprint를 채우세요. 
+    - 원문에 없는 경우 null로 표기하세요. 
+    - 배열은 간결하게 유지하세요. 
+    - 출력은 반드시 JSON 형식으로 하세요. 
+    - 출력의 모든 값은 한국어로 작성하세요
+""")
+
+DISTILL_HUMAN = """
+아래 blueprint를 기준으로 텍스트를 요약하여 채워 주세요.  
+반드시 JSON으로만 출력하고, 값은 한국어로 작성해야 합니다.
+
+Blueprint (JSON-like):
 {blueprint}
 
-Texts (grouped, semantically similar):
-{joined_texts}"""
+텍스트 묶음 (의미적으로 유사한 그룹):
+{joined_texts}
 
-ENT_SYS = (
-    "You extract DISTINCT legal entities from the distilled JSON. "
-    "Each entity must represent a semantically UNIQUE concept."
-)
-ENT_HUMAN = """Return JSON with key 'entities' only:
-[{{"id":"e1","canonical":"...","aliases":["..."],"type":"...","source":["..."]}}]
+"""
+ENT_SYS = ("""
+당신은 한국어 법률 조문에서 핵심 엔티티를 추출하는 역할을 합니다.  
+다음 지침을 반드시 지키세요:
 
-Distilled JSON:
-{distilled}"""
+- 출력은 JSON 형식으로만 하세요.
+- canonical은 반드시 하나의 한국어 표현으로 지정하세요.
+- aliases에는 약어, 다른 한국어 표현, 영어 번역명을 넣을 수 있습니다.
+- 출력의 canonical, aliases, type, evidence 값은 반드시 한국어로 작성하세요.
+- 조문 전체를 canonical로 두지 마세요. 원자적 개념(법률명, 조문번호, 정의된 용어, 기관명, 행위, 조건, 수치 등)만 추출하세요.
+""")
 
-REL_SYS = (
-    "You extract relations (subject, predicate, object) between the given entities. "
-    "Ground each relation in the distilled JSON; include minimal 'evidence' strings."
-)
-REL_HUMAN = """Return JSON with key 'relations' only:
-[{{"s":"e1","p":"defines","o":"e2","evidence":["..."]}}]
+ENT_HUMAN = """아래 텍스트에서 엔티티를 추출해 주세요.  
+반드시 JSON으로만 출력하며, 키 이름은 정확히 'entities' 여야 합니다.  
+출력 예시는 다음과 같습니다:
 
-Entities:
+[{{
+  "id":"e1",
+  "canonical":"개인정보 보호법",
+  "aliases":["개보법","Privacy Act"],
+  "type":"법률",
+  "source":["doc://개인정보보호법#제28조의2"],
+  "evidence":["..."]
+}},{{
+  "id":"e2",
+  "canonical":"제28조의2",
+  "aliases":["가명정보의 처리"],
+  "type":"조문",
+  "source":["doc://개인정보보호법#제28조의2"],
+  "evidence":["..."]
+}}]
+
+텍스트:
+{distilled}
+"""
+
+REL_SYS = ("""
+당신은 한국어 법률 조문에서 엔티티 간 관계를 추출하는 역할을 합니다.  
+다음 지침을 반드시 지키세요:
+
+- 출력은 JSON 형식으로만 하세요.
+- 관계의 subject(s), predicate(p), object(o)는 모두 엔티티 canonical을 참조하세요.
+- predicate 값은 한국어 동사 또는 명사구로 작성하세요. (예: "정의한다","허용한다","적용된다","발급한다","제한한다")
+- evidence 값은 반드시 한국어 원문 일부를 그대로 인용하세요.
+- 출력 JSON 이외의 설명은 하지 마세요.
+""")
+REL_HUMAN = """아래 엔티티와 텍스트를 참고하여 관계를 추출해 주세요.  
+반드시 JSON으로만 출력하며, 키 이름은 정확히 'relations' 여야 합니다.  
+
+엔티티:
 {entities}
 
-Distilled JSON:
-{distilled}"""
-
-# ---------------------------
-# 4) 체인 구성 (LCEL)
-# ---------------------------
+텍스트:
+{distilled}
+"""
+# rels 추출에는 차라리 제로샷이 나은 듯. few shot은 그 예시에 너무 집착하는 듯한 모습을 보임
 def _structured_chain(system: str, human: str, schema: Type[BaseModel]) -> Runnable:
     """
     - ChatPromptTemplate → ChatOpenAI(with_structured_output) 로 이어지는 체인
@@ -98,7 +118,7 @@ def _structured_chain(system: str, human: str, schema: Type[BaseModel]) -> Runna
     prompt = ChatPromptTemplate.from_messages(
         [("system", system), ("human", human)]
     )
-    return prompt | _llm().with_structured_output(schema)
+    return prompt | llm.with_structured_output(schema)
 
 # 체인 인스턴스
 _distill_chain = _structured_chain(DISTILL_SYS, DISTILL_HUMAN, Distilled)
